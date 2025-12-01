@@ -20,19 +20,20 @@ if [ -d ".venv" ]; then
     PIP_CMD=".venv/bin/pip3"
     
     # Aktiviere Virtual Environment
+    # shellcheck source=/dev/null
     source .venv/bin/activate
 else
     echo "Kein Virtual Environment gefunden."
     echo "Erstelle Virtual Environment..."
-    python3 -m venv .venv
     
-    if [ $? -ne 0 ]; then
+    if ! python3 -m venv .venv; then
         echo "FEHLER: Virtual Environment konnte nicht erstellt werden!"
         echo "Installieren Sie python3-venv mit:"
         echo "  sudo apt install python3-venv"
         exit 1
     fi
     
+    # shellcheck source=/dev/null
     source .venv/bin/activate
     PYTHON_CMD=".venv/bin/python3"
     PIP_CMD=".venv/bin/pip3"
@@ -41,24 +42,21 @@ fi
 
 # Prüfe ob PyInstaller installiert ist
 echo "Prüfe Abhängigkeiten..."
-$PIP_CMD show pyinstaller > /dev/null 2>&1
-if [ $? -ne 0 ]; then
+if ! "$PIP_CMD" show pyinstaller > /dev/null 2>&1; then
     echo "PyInstaller nicht gefunden. Installiere PyInstaller..."
-    $PIP_CMD install pyinstaller
+    "$PIP_CMD" install pyinstaller
     echo
 fi
 
 # Prüfe ob Pillow installiert ist
-$PIP_CMD show Pillow > /dev/null 2>&1
-if [ $? -ne 0 ]; then
+if ! "$PIP_CMD" show Pillow > /dev/null 2>&1; then
     echo "Pillow nicht gefunden. Installiere Pillow..."
-    $PIP_CMD install Pillow
+    "$PIP_CMD" install Pillow
     echo
 fi
 
 # Prüfe ob tkinter verfügbar ist
-$PYTHON_CMD -c "import tkinter" > /dev/null 2>&1
-if [ $? -ne 0 ]; then
+if ! "$PYTHON_CMD" -c "import tkinter" > /dev/null 2>&1; then
     echo "WARNUNG: tkinter ist nicht installiert!"
     echo "Installieren Sie tkinter mit:"
     echo "  sudo apt install python3-tk"
@@ -72,9 +70,8 @@ fi
 
 echo "Erstelle Binary-Datei..."
 echo
-$PYTHON_CMD -m PyInstaller --onefile --windowed --name "ORM-Map-Generator" --clean orm-maps-generator.py
 
-if [ $? -ne 0 ]; then
+if ! "$PYTHON_CMD" -m PyInstaller --onefile --windowed --name "ORM-Map-Generator" --clean orm-maps-generator.py; then
     echo
     echo "================================================"
     echo "FEHLER: Build fehlgeschlagen!"
