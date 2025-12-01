@@ -127,27 +127,40 @@ class ORMGeneratorGUI:
             self.progress.set(0)
             self.log_text.delete(1.0, tk.END)
             
-            # Alle Albedo-Texturen finden (case-insensitive und mit Unterordnern)
+            # Alle Albedo-Texturen finden (verschiedene Namensformate)
             albedo_files = []
-            for pattern in ["*_albedo.png", "*_Albedo.png", "*_ALBEDO.png"]:
-                albedo_files.extend(glob.glob(os.path.join(input_dir, pattern)))
-                albedo_files.extend(glob.glob(os.path.join(input_dir, "**", pattern), recursive=True))
+            albedo_suffixes = [
+                "albedo", "Albedo", "ALBEDO", "base", "Base", "BASE",
+                "color", "Color", "COLOR", "col", "Col", "COL",
+                "diffuse", "Diffuse", "DIFFUSE", "diff", "Diff", "DIFF",
+                "basecol", "BaseCol", "BASECOL", "basecolor", "BaseColor", "BASECOLOR"
+            ]
+            extensions = ["png", "jpg", "jpeg", "jp2"]
+            
+            for suffix in albedo_suffixes:
+                for ext in extensions:
+                    for sep in ["_", "-"]:
+                        pattern = f"*{sep}{suffix}.{ext}"
+                        albedo_files.extend(glob.glob(os.path.join(input_dir, pattern)))
+                        albedo_files.extend(glob.glob(os.path.join(input_dir, "**", pattern), recursive=True))
             
             # Duplikate entfernen
             albedo_files = list(set(albedo_files))
             
             if not albedo_files:
-                self.log("Keine _albedo.png Dateien gefunden!")
+                self.log("Keine Albedo/Base/Color Texturen gefunden!")
                 self.log(f"Durchsuchtes Verzeichnis: {input_dir}")
                 
-                # Zeige verfügbare PNG-Dateien zur Diagnose
-                all_pngs = glob.glob(os.path.join(input_dir, "*.png"))
-                if all_pngs:
-                    self.log(f"\nGefundene PNG-Dateien ({len(all_pngs)}):")
-                    for png in all_pngs[:5]:  # Zeige erste 5
-                        self.log(f"  - {os.path.basename(png)}")
-                    if len(all_pngs) > 5:
-                        self.log(f"  ... und {len(all_pngs) - 5} weitere")
+                # Zeige verfügbare Bilddateien zur Diagnose
+                all_images = []
+                for ext in ["*.png", "*.jpg", "*.jpeg", "*.jp2"]:
+                    all_images.extend(glob.glob(os.path.join(input_dir, ext)))
+                if all_images:
+                    self.log(f"\nGefundene Bilddateien ({len(all_images)}):")
+                    for img in all_images[:5]:  # Zeige erste 5
+                        self.log(f"  - {os.path.basename(img)}")
+                    if len(all_images) > 5:
+                        self.log(f"  ... und {len(all_images) - 5} weitere")
                 
                 self.status.set("Fehler: Keine Texturen gefunden")
                 return
@@ -159,7 +172,26 @@ class ORMGeneratorGUI:
             errors = 0
             
             for i, albedo_file in enumerate(albedo_files):
-                base_name = os.path.basename(albedo_file).replace("_albedo.png", "")
+                base_name = os.path.basename(albedo_file)
+                # Entferne Albedo-Suffix und Extension
+                all_suffixes = [
+                    "_albedo", "_Albedo", "_ALBEDO", "_base", "_Base", "_BASE",
+                    "_color", "_Color", "_COLOR", "_col", "_Col", "_COL",
+                    "_diffuse", "_Diffuse", "_DIFFUSE", "_diff", "_Diff", "_DIFF",
+                    "_basecol", "_BaseCol", "_BASECOL", "_basecolor", "_BaseColor", "_BASECOLOR",
+                    "-albedo", "-Albedo", "-ALBEDO", "-base", "-Base", "-BASE",
+                    "-color", "-Color", "-COLOR", "-col", "-Col", "-COL",
+                    "-diffuse", "-Diffuse", "-DIFFUSE", "-diff", "-Diff", "-DIFF",
+                    "-basecol", "-BaseCol", "-BASECOL", "-basecolor", "-BaseColor", "-BASECOLOR"
+                ]
+                for suffix in all_suffixes:
+                    for ext in [".png", ".jpg", ".jpeg", ".jp2"]:
+                        if base_name.endswith(suffix + ext):
+                            base_name = base_name[:-(len(suffix) + len(ext))]
+                            break
+                    else:
+                        continue
+                    break
                 
                 # Fortschritt aktualisieren
                 progress_percent = (i / len(albedo_files)) * 100
@@ -191,11 +223,44 @@ class ORMGeneratorGUI:
     
     def create_single_orm_map(self, input_dir, output_dir, base_name):
         try:
-            # Datei-Pfade
-            ao_file = os.path.join(input_dir, f"{base_name}_ao.png")
-            roughness_file = os.path.join(input_dir, f"{base_name}_roughness.png")
-            metallic_file = os.path.join(input_dir, f"{base_name}_metallic.png")
-            height_file = os.path.join(input_dir, f"{base_name}_height.png")
+            # Suffix-Definitionen für verschiedene Map-Typen
+            ao_suffixes = [
+                "ao", "AO", "ambient", "Ambient", "occlusion", "Occlusion",
+                "ambientocclusion", "AmbientOcclusion", "Occ", "aoTex", "aoTexture",
+                "ambient_occlusion", "occlusionmap", "occlusion_map"
+            ]
+            roughness_suffixes = [
+                "roughness", "Roughness", "rough", "Rough", "roug", "Roug", "rgh", "Rgh",
+                "roughTex", "roughTexture", "rough_map", "roughnessmap", "roughness_map"
+            ]
+            metallic_suffixes = [
+                "metallic", "Metallic", "metalness", "Metalness", "mtl", "Mtl", "metal", "Metal",
+                "metalTex", "metalTexture", "metal_map", "metallicmap", "metallic_map"
+            ]
+            height_suffixes = [
+                "height", "Height", "disp", "Disp", "displacement", "Displacement",
+                "bump", "Bump", "bumpmap", "BumpMap"
+            ]
+            
+            # Datei-Pfade (unterstützt _ und - als Trennzeichen, mehrere Extensions)
+            def find_texture_file(base, suffix_list):
+                extensions = ["png", "jpg", "jpeg", "jp2"]
+                for suffix in suffix_list:
+                    for sep in ['_', '-']:
+                        for ext in extensions:
+                            path = os.path.join(input_dir, f"{base}{sep}{suffix}.{ext}")
+                            if os.path.exists(path):
+                                return path
+                            # Rekursive Suche in Unterordnern
+                            matches = glob.glob(os.path.join(input_dir, "**", f"{base}{sep}{suffix}.{ext}"), recursive=True)
+                            if matches:
+                                return matches[0]
+                return None
+            
+            ao_file = find_texture_file(base_name, ao_suffixes)
+            roughness_file = find_texture_file(base_name, roughness_suffixes)
+            metallic_file = find_texture_file(base_name, metallic_suffixes)
+            height_file = find_texture_file(base_name, height_suffixes)
             
             # Output-Pfad
             output_file = os.path.join(output_dir, f"{base_name}_ORM.png")
@@ -206,21 +271,25 @@ class ORMGeneratorGUI:
                 return True
             
             # Falls AO fehlt und Height Map verwendet werden soll
-            if self.use_height_for_ao.get() and not os.path.exists(ao_file) and os.path.exists(height_file):
+            if self.use_height_for_ao.get() and not ao_file and height_file:
                 self.log(f"  Verwende Height Map für AO: {base_name}")
                 ao_file = height_file
             
             # Überprüfen ob alle benötigten Dateien existieren
             missing_files = []
-            for file_path in [ao_file, roughness_file, metallic_file]:
-                if not os.path.exists(file_path):
-                    missing_files.append(os.path.basename(file_path))
+            if not ao_file:
+                missing_files.append("ao")
+            if not roughness_file:
+                missing_files.append("roughness")
+            if not metallic_file:
+                missing_files.append("metallic")
             
             if missing_files:
                 self.log(f"FEHLER {base_name}: Fehlende Dateien - {', '.join(missing_files)}")
                 return False
             
-            # Bilder laden und verarbeiten
+            # Bilder laden und verarbeiten (Type-Check bereits durch missing_files)
+            assert ao_file and roughness_file and metallic_file  # Type narrowing
             ao_img = Image.open(ao_file).convert("L")
             roughness_img = Image.open(roughness_file).convert("L")
             metallic_img = Image.open(metallic_file).convert("L")
