@@ -24,6 +24,11 @@ class ORMGeneratorGUI:
         self.normal_preview_widget = None
         self.combined_preview_widget = None
         
+        # Optionen
+        self.use_height_for_ao = tk.BooleanVar(value=True)
+        self.overwrite_existing = tk.BooleanVar(value=False)
+        self.fill_missing_maps = tk.BooleanVar(value=False)  # Standard: AUS
+        
         self.setup_ui()
     
     def setup_ui(self):
@@ -58,19 +63,21 @@ class ORMGeneratorGUI:
         options_frame = ttk.LabelFrame(control_frame, text="Optionen", padding="5")
         options_frame.grid(row=4, column=0, columnspan=2, sticky="ew", pady=10)
         
-        self.use_height_for_ao = tk.BooleanVar(value=True)
         ttk.Checkbutton(options_frame, text="Height für AO verwenden", 
                        variable=self.use_height_for_ao).grid(row=0, column=0, sticky=tk.W)
         
-        self.overwrite_existing = tk.BooleanVar(value=False)
         ttk.Checkbutton(options_frame, text="Existierende überschreiben", 
                        variable=self.overwrite_existing).grid(row=1, column=0, sticky=tk.W)
+        
+        ttk.Checkbutton(options_frame, text="Fehlende Maps automatisch auffüllen", 
+                       variable=self.fill_missing_maps).grid(row=2, column=0, sticky=tk.W)
         
         # Buttons
         button_frame = ttk.Frame(control_frame)
         button_frame.grid(row=5, column=0, columnspan=2, pady=10)
         
         ttk.Button(button_frame, text="Texturen laden", command=self.load_textures).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="Fehlende Maps", command=self.generate_missing_maps).pack(side=tk.LEFT, padx=5)
         ttk.Button(button_frame, text="ORM generieren", command=self.start_generation).pack(side=tk.LEFT, padx=5)
         ttk.Button(button_frame, text="GLTF generieren", command=self.generate_gltf).pack(side=tk.LEFT, padx=5)
         
@@ -152,8 +159,7 @@ class ORMGeneratorGUI:
         directory = filedialog.askdirectory(title="Eingabe-Verzeichnis auswählen")
         if directory:
             self.input_dir.set(directory)
-            if not self.output_dir.get():
-                self.output_dir.set(os.path.join(directory, "ORM_Maps"))
+            self.output_dir.set(directory)
     
     def browse_output_dir(self):
         directory = filedialog.askdirectory(title="Ausgabe-Verzeichnis auswählen")
@@ -199,6 +205,12 @@ class ORMGeneratorGUI:
                     pattern = f"*{sep}{suffix}.{ext}"
                     albedo_files.extend(glob.glob(os.path.join(input_dir, pattern)))
                     albedo_files.extend(glob.glob(os.path.join(input_dir, "**", pattern), recursive=True))
+                    
+                    # Polyhaven: *_diff_1k.jpg, *_diff_2k.jpg, etc.
+                    for res in ["1k", "2k", "4k", "8k", "16k"]:
+                        pattern_res = f"*{sep}{suffix}_{res}.{ext}"
+                        albedo_files.extend(glob.glob(os.path.join(input_dir, pattern_res)))
+                        albedo_files.extend(glob.glob(os.path.join(input_dir, "**", pattern_res), recursive=True))
         
         albedo_files = list(set(albedo_files))
         
@@ -214,6 +226,7 @@ class ORMGeneratorGUI:
             for suffix in albedo_suffixes:
                 for ext in extensions:
                     for sep in ["_", "-"]:
+                        # Standard: material_diff.jpg
                         full_suffix = f"{sep}{suffix}.{ext}"
                         if base_name.endswith(full_suffix):
                             base_name = base_name[:-(len(full_suffix))]
@@ -223,6 +236,21 @@ class ORMGeneratorGUI:
                                 'dir': os.path.dirname(albedo_file)
                             })
                             break
+                        
+                        # Polyhaven: material_diff_1k.jpg
+                        for res in ["1k", "2k", "4k", "8k", "16k"]:
+                            full_suffix_res = f"{sep}{suffix}_{res}.{ext}"
+                            if base_name.endswith(full_suffix_res):
+                                base_name = base_name[:-(len(full_suffix_res))]
+                                self.texture_list.append({
+                                    'base_name': base_name,
+                                    'albedo_file': albedo_file,
+                                    'dir': os.path.dirname(albedo_file)
+                                })
+                                break
+                        else:
+                            continue
+                        break
                     else:
                         continue
                     break
@@ -250,20 +278,28 @@ class ORMGeneratorGUI:
         # Finde Textur-Dateien
         normal_file = self.find_texture_file_with_ogl(texture_dir, base_name, [
             "normal", "Normal", "NORMAL",
+            "NormalGL", "NormalDX",  # AmbientCG
+            "nor_gl", "nor_dx",  # Polyhaven
             "norrmal",  # Tippfehler
-            "norm", "Norm"
+            "norm", "Norm",
+            "NRM", "Nrm", "nrm",  # CGBookcase, Poliigon
+            "nor", "Nor", "NOR"  # FreePBR
         ])
         ao_file = self.find_texture_file(texture_dir, base_name, [
             "ao", "AO", "Ao",
             "ambient", "Ambient", "AMBIENT",
             "occlusion", "Occlusion", "OCCLUSION",
+            "AmbientOcclusion",  # AmbientCG
+            "ambientOcclusion",  # 3dtextures.me
             "Occlusionc", "ambient-occlusion"  # Tippfehler in Texturen
         ])
         roughness_file = self.find_texture_file(texture_dir, base_name, [
             "roughness", "Roughness", "ROUGHNESS",
             "rough", "Rough", "ROUGH",
             "roughnness",  # Tippfehler in Texturen
-            "rgh", "RGH"
+            "rgh", "RGH",
+            "REFL", "Refl", "refl",  # CGBookcase, Poliigon (Roughness Map)
+            "gloss", "Gloss", "GLOSS"  # TextureCan, Poliigon (inverted roughness)
         ])
         metallic_file = self.find_texture_file(texture_dir, base_name, [
             "metallic", "Metallic", "METALLIC",
@@ -271,18 +307,20 @@ class ORMGeneratorGUI:
             "metalic",  # Tippfehler in Texturen
             "metallness", "Metallness",
             "metalness", "Metalness",
-            "mtl", "MTL"
+            "mtl", "MTL",
+            "Metalness",  # cc0textures
+            "specular", "Specular", "SPECULAR"  # Legacy PBR (Textures.com, TextureCan)
         ])
         height_file = self.find_texture_file(texture_dir, base_name, [
             "height", "Height", "HEIGHT",
             "disp", "Disp", "DISP",
-            "displacement", "Displacement",
+            "displacement", "Displacement", "DISPLACEMENT",  # AmbientCG
             "bump", "Bump", "BUMP"
         ])
         emission_file = self.find_texture_file(texture_dir, base_name, [
             "emission", "Emission", "EMISSION",
             "emissive", "Emissive", "EMISSIVE",
-            "emiss", "Emiss",
+            "emiss", "Emiss", "emis", "Emis", "emi", "Emi",
             "glow", "Glow", "GLOW"
         ])
         
@@ -316,16 +354,23 @@ class ORMGeneratorGUI:
         for suffix in suffixes:
             for sep in ['_', '-']:
                 for ext in extensions:
+                    # Standard: material_rough.jpg
                     path = os.path.join(directory, f"{base_name}{sep}{suffix}.{ext}")
                     if os.path.exists(path):
                         return path
+                    
+                    # Polyhaven: material_rough_1k.jpg
+                    for res in ["1k", "2k", "4k", "8k", "16k"]:
+                        path_res = os.path.join(directory, f"{base_name}{sep}{suffix}_{res}.{ext}")
+                        if os.path.exists(path_res):
+                            return path_res
         return None
     
     def find_texture_file_with_ogl(self, directory, base_name, suffixes):
         """Spezielle Suche für Normal-Maps die oft -ogl oder Nummern haben"""
         extensions = ["png", "jpg", "jpeg", "jp2"]
         
-        # Erst normale Suche
+        # Erst normale Suche (inkl. Polyhaven-Auflösungen)
         result = self.find_texture_file(directory, base_name, suffixes)
         if result:
             return result
@@ -335,13 +380,21 @@ class ORMGeneratorGUI:
         for suffix in suffixes:
             for sep in ['_', '-']:
                 for ext in extensions:
-                    # Mit -ogl Suffix
+                    # Polyhaven: material_nor_gl_1k.jpg (with underscore before resolution)
+                    for res in ["1k", "2k", "4k", "8k", "16k"]:
+                        # Pattern: *_nor_gl_1k.jpg
+                        pattern = os.path.join(directory, f"{base_name}{sep}{suffix}_{res}.{ext}")
+                        matches = glob_mod.glob(pattern)
+                        if matches:
+                            return matches[0]
+                    
+                    # Mit -ogl Suffix: material_normal-ogl.jpg
                     pattern = os.path.join(directory, f"{base_name}{sep}{suffix}*-ogl.{ext}")
                     matches = glob_mod.glob(pattern)
                     if matches:
                         return matches[0]
                     
-                    # Mit Nummern
+                    # Mit Nummern: material_normal4.jpg
                     pattern = os.path.join(directory, f"{base_name}{sep}{suffix}[0-9].{ext}")
                     matches = glob_mod.glob(pattern)
                     if matches:
@@ -450,6 +503,97 @@ class ORMGeneratorGUI:
         thread.daemon = True
         thread.start()
     
+    def generate_missing_maps(self):
+        """Generiert nur fehlende Einzeltexturen (AO, Roughness, Metallic) als separate Dateien"""
+        if not self.texture_list:
+            messagebox.showwarning("Warnung", "Bitte zuerst Texturen laden!")
+            return
+        
+        if not self.input_dir.get():
+            messagebox.showerror("Fehler", "Bitte Eingabe-Verzeichnis auswählen!")
+            return
+        
+        thread = threading.Thread(target=self._generate_missing_maps_thread)
+        thread.daemon = True
+        thread.start()
+    
+    def _generate_missing_maps_thread(self):
+        """Thread-Funktion für Generierung fehlender Maps"""
+        try:
+            self.status.set("Generiere fehlende Maps...")
+            self.progress.set(0)
+            
+            generated = 0
+            skipped = 0
+            
+            for i, texture_info in enumerate(self.texture_list):
+                base_name = texture_info['base_name']
+                texture_dir = texture_info['dir']
+                output_dir = self.output_dir.get() or texture_dir
+                
+                progress_percent = (i / len(self.texture_list)) * 100
+                self.progress.set(progress_percent)
+                self.status.set(f"Prüfe: {base_name}")
+                
+                # Prüfe welche Maps fehlen
+                ao_file = self.find_texture_file(texture_dir, base_name, ["ao", "AO", "ambient", "occlusion"])
+                roughness_file = self.find_texture_file(texture_dir, base_name, ["roughness", "rough", "ROUGH"])
+                metallic_file = self.find_texture_file(texture_dir, base_name, ["metallic", "metal", "METAL"])
+                
+                # Bestimme Zielgröße
+                reference_img = None
+                if texture_info['albedo_file']:
+                    reference_img = Image.open(texture_info['albedo_file'])
+                
+                if reference_img:
+                    target_size = reference_img.size
+                else:
+                    target_size = (1024, 1024)
+                
+                created_maps = []
+                
+                # Erstelle fehlende AO
+                if not ao_file:
+                    ao_img = Image.new("L", target_size, 255)
+                    ao_path = os.path.join(output_dir, f"{base_name}_ao.png")
+                    os.makedirs(output_dir, exist_ok=True)
+                    ao_img.save(ao_path, "PNG")
+                    created_maps.append("AO")
+                
+                # Erstelle fehlende Roughness
+                if not roughness_file:
+                    rough_img = Image.new("L", target_size, 128)
+                    rough_path = os.path.join(output_dir, f"{base_name}_roughness.png")
+                    os.makedirs(output_dir, exist_ok=True)
+                    rough_img.save(rough_path, "PNG")
+                    created_maps.append("Roughness")
+                
+                # Erstelle fehlende Metallic
+                if not metallic_file:
+                    metal_img = Image.new("L", target_size, 0)
+                    metal_path = os.path.join(output_dir, f"{base_name}_metallic.png")
+                    os.makedirs(output_dir, exist_ok=True)
+                    metal_img.save(metal_path, "PNG")
+                    created_maps.append("Metallic")
+                
+                if created_maps:
+                    self.log(f"Erstellt für {base_name}: {', '.join(created_maps)}")
+                    generated += 1
+                else:
+                    skipped += 1
+            
+            self.progress.set(100)
+            self.status.set("Fehlende Maps generiert!")
+            self.log("=" * 50)
+            self.log(f"Materialien mit erstellten Maps: {generated}, Vollständig: {skipped}")
+            
+            messagebox.showinfo("Fertig", f"Fehlende Maps generiert!\nBearbeitet: {generated}\nVollständig: {skipped}")
+            
+        except Exception as e:
+            self.log(f"FEHLER: {str(e)}")
+            self.status.set("Fehler aufgetreten")
+            messagebox.showerror("Fehler", f"Fehler bei Map-Generierung:\n{str(e)}")
+    
     def generate_orm_maps(self):
         try:
             output_dir = self.output_dir.get()
@@ -498,13 +642,17 @@ class ORMGeneratorGUI:
                 "ao", "AO", "Ao",
                 "ambient", "Ambient", "AMBIENT",
                 "occlusion", "Occlusion", "OCCLUSION",
+                "AmbientOcclusion",  # AmbientCG
+                "ambientOcclusion",  # 3dtextures.me
                 "Occlusionc"  # Tippfehler
             ]
             roughness_suffixes = [
                 "roughness", "Roughness", "ROUGHNESS",
                 "rough", "Rough", "ROUGH",
                 "roughnness",  # Tippfehler
-                "rgh", "RGH", "Rgh"
+                "rgh", "RGH", "Rgh",
+                "REFL", "Refl", "refl",  # CGBookcase, Poliigon
+                "gloss", "Gloss", "GLOSS"  # TextureCan (inverted)
             ]
             metallic_suffixes = [
                 "metallic", "Metallic", "METALLIC",
@@ -512,12 +660,14 @@ class ORMGeneratorGUI:
                 "metalic",  # Tippfehler
                 "metallness", "Metallness",
                 "metalness", "Metalness",
-                "mtl", "MTL", "Mtl"
+                "mtl", "MTL", "Mtl",
+                "Metalness",  # cc0textures
+                "specular", "Specular", "SPECULAR"  # Legacy
             ]
             height_suffixes = [
                 "height", "Height", "HEIGHT",
                 "disp", "Disp", "DISP",
-                "displacement", "Displacement",
+                "displacement", "Displacement", "DISPLACEMENT",  # AmbientCG
                 "bump", "Bump", "BUMP"
             ]
             
@@ -526,9 +676,16 @@ class ORMGeneratorGUI:
                 for suffix in suffix_list:
                     for sep in ['_', '-']:
                         for ext in extensions:
+                            # Standard: material_rough.jpg
                             path = os.path.join(input_dir, f"{base}{sep}{suffix}.{ext}")
                             if os.path.exists(path):
                                 return path
+                            
+                            # Polyhaven: material_rough_1k.jpg
+                            for res in ["1k", "2k", "4k", "8k", "16k"]:
+                                path_res = os.path.join(input_dir, f"{base}{sep}{suffix}_{res}.{ext}")
+                                if os.path.exists(path_res):
+                                    return path_res
                 return None
             
             ao_file = find_texture_file(base_name, ao_suffixes)
@@ -545,32 +702,68 @@ class ORMGeneratorGUI:
             if self.use_height_for_ao.get() and not ao_file and height_file:
                 ao_file = height_file
             
-            missing_files = []
-            if not ao_file:
-                missing_files.append("ao")
-            if not roughness_file:
-                missing_files.append("roughness")
-            if not metallic_file:
-                missing_files.append("metallic")
+            # Prüfe ob fehlende Maps automatisch aufgefüllt werden sollen
+            if not self.fill_missing_maps.get():
+                # Alte Logik: Fehlende Maps führen zu Fehler
+                missing_files = []
+                if not ao_file:
+                    missing_files.append("ao")
+                if not roughness_file:
+                    missing_files.append("roughness")
+                if not metallic_file:
+                    missing_files.append("metallic")
+                
+                if missing_files:
+                    self.log(f"FEHLER {base_name}: Fehlende Dateien - {', '.join(missing_files)}")
+                    return False
             
-            if missing_files:
-                self.log(f"FEHLER {base_name}: Fehlende Dateien - {', '.join(missing_files)}")
-                return False
+            # Bestimme Zielgröße aus vorhandenen Dateien
+            reference_img = None
+            if ao_file:
+                reference_img = Image.open(ao_file)
+            elif roughness_file:
+                reference_img = Image.open(roughness_file)
+            elif metallic_file:
+                reference_img = Image.open(metallic_file)
             
-            assert ao_file and roughness_file and metallic_file
-            ao_img = Image.open(ao_file).convert("L")
-            roughness_img = Image.open(roughness_file).convert("L")
-            metallic_img = Image.open(metallic_file).convert("L")
+            # Falls alle fehlen, verwende Standardgröße
+            if reference_img:
+                target_size = reference_img.size
+            else:
+                target_size = (1024, 1024)  # Standardgröße
             
-            sizes = [img.size for img in [ao_img, roughness_img, metallic_img]]
-            target_size = max(sizes, key=lambda x: x[0] * x[1])
+            # Lade oder erstelle AO (Standard: Weiß = keine Verdeckung)
+            if ao_file and os.path.exists(ao_file):
+                ao_img = Image.open(ao_file).convert("L")
+                if ao_img.size != target_size:
+                    ao_img = ao_img.resize(target_size, Image.Resampling.LANCZOS)
+            elif self.fill_missing_maps.get():
+                ao_img = Image.new("L", target_size, 255)  # Weiß = keine Ambient Occlusion
+                self.log(f"INFO {base_name}: AO fehlt - verwende Weiß (255)")
+            else:
+                raise Exception("AO-Map fehlt")
             
-            if ao_img.size != target_size:
-                ao_img = ao_img.resize(target_size, Image.Resampling.LANCZOS)
-            if roughness_img.size != target_size:
-                roughness_img = roughness_img.resize(target_size, Image.Resampling.LANCZOS)
-            if metallic_img.size != target_size:
-                metallic_img = metallic_img.resize(target_size, Image.Resampling.LANCZOS)
+            # Lade oder erstelle Roughness (Standard: Mittelgrau = semi-rough)
+            if roughness_file and os.path.exists(roughness_file):
+                roughness_img = Image.open(roughness_file).convert("L")
+                if roughness_img.size != target_size:
+                    roughness_img = roughness_img.resize(target_size, Image.Resampling.LANCZOS)
+            elif self.fill_missing_maps.get():
+                roughness_img = Image.new("L", target_size, 128)  # Grau = mittlere Roughness
+                self.log(f"INFO {base_name}: Roughness fehlt - verwende Grau (128)")
+            else:
+                raise Exception("Roughness-Map fehlt")
+            
+            # Lade oder erstelle Metallic (Standard: Schwarz = nicht-metallisch)
+            if metallic_file and os.path.exists(metallic_file):
+                metallic_img = Image.open(metallic_file).convert("L")
+                if metallic_img.size != target_size:
+                    metallic_img = metallic_img.resize(target_size, Image.Resampling.LANCZOS)
+            elif self.fill_missing_maps.get():
+                metallic_img = Image.new("L", target_size, 0)  # Schwarz = nicht-metallisch
+                self.log(f"INFO {base_name}: Metallic fehlt - verwende Schwarz (0)")
+            else:
+                raise Exception("Metallic-Map fehlt")
             
             orm_map = Image.merge("RGB", (ao_img, roughness_img, metallic_img))
             
@@ -621,18 +814,34 @@ class ORMGeneratorGUI:
                     # Finde alle vorhandenen Texturen
                     albedo_file = texture_info['albedo_file']
                     normal_file = self.find_texture_file_with_ogl(texture_dir, base_name, [
-                        "normal", "Normal", "NORMAL", "norrmal"
+                        "normal", "Normal", "NORMAL",
+                        "NormalGL", "NormalDX",  # AmbientCG
+                        "nor_gl", "nor_dx",  # Polyhaven
+                        "norrmal",  # Tippfehler
+                        "norm", "Norm",
+                        "NRM", "Nrm", "nrm",  # CGBookcase, Poliigon
+                        "nor", "Nor", "NOR"  # FreePBR
                     ])
                     emission_file = self.find_texture_file(texture_dir, base_name, [
                         "emission", "Emission", "EMISSION",
-                        "emissive", "Emissive", "emiss",
+                        "emissive", "Emissive", "EMISSIVE",
+                        "emiss", "Emiss",
                         "glow", "Glow", "GLOW"
                     ])
                     
                     # Prüfe ob ORM Map bereits existiert
-                    output_dir = self.output_dir.get() or os.path.join(texture_dir, "ORM_Maps")
+                    output_dir = self.output_dir.get() or texture_dir
                     orm_file = os.path.join(output_dir, f"{base_name}_ORM.png")
-                    if not os.path.exists(orm_file):
+                    
+                    # Falls ORM nicht existiert und fill_missing_maps aktiv ist, erstelle sie
+                    if not os.path.exists(orm_file) and self.fill_missing_maps.get():
+                        self.log(f"GLTF: Erstelle fehlende ORM-Map für {base_name}")
+                        success = self.create_single_orm_map(texture_dir, output_dir, base_name)
+                        if not success:
+                            self.log(f"WARNUNG: ORM-Erstellung fehlgeschlagen für {base_name}")
+                            orm_file = None
+                    elif not os.path.exists(orm_file):
+                        self.log(f"WARNUNG: ORM fehlt für {base_name} (automatisches Auffüllen deaktiviert)")
                         orm_file = None
                     
                     # Erstelle Texture-Dictionary mit relativen Pfaden
